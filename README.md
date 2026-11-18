@@ -51,6 +51,32 @@ config :airbrake_ex,
   http_options: [ssl: [cacertfile: "/path/to/certfile.pem"]]
 ```
 
+### Performance
+
+`AirbrakeEx.Performance` sends how long routes, database queries and background jobs take
+(Airbrake's performance monitoring, about once a minute), from the `:telemetry` events Phoenix,
+LiveView, Ecto and Oban already emit. Turn it on and start it after the repos:
+
+```elixir
+config :airbrake_ex,
+  project_key: "abcdef12345",
+  project_id: 123456,
+  performance_stats: true
+
+children = [
+  MyApp.Repo,
+  {AirbrakeEx.Performance, repos: [MyApp.Repo]},
+  MyAppWeb.Endpoint
+]
+```
+
+Routes are named by their pattern (`/users/:id`), queries by their parameterized SQL, jobs by
+their worker. Measure anything else with `measure/4`:
+
+```elixir
+AirbrakeEx.Performance.measure("RPC", "create_user", fn -> create_user(params) end)
+```
+
 ## Usage
 
 ```elixir

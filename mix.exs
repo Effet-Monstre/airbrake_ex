@@ -4,7 +4,7 @@ defmodule AirbrakeEx.MixProject do
   def project do
     [
       app: :airbrake_ex,
-      version: "0.2.9",
+      version: "0.3.0",
       elixir: "~> 1.14",
       description: "Airbrake notifier for Elixir",
       package: package(),
@@ -33,6 +33,7 @@ defmodule AirbrakeEx.MixProject do
     [
       {:httpoison, "~> 1.8"},
       {:jason, "~> 1.4.4"},
+      {:telemetry, "~> 0.4 or ~> 1.0"},
       {:bypass, "~> 2.1", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.0.0", only: :dev, runtime: false},
