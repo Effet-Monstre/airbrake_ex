@@ -13,6 +13,9 @@ defmodule AirbrakeEx.Plug do
   ```
   """
 
+  # Plug is the application's: only a Plug app uses this module.
+  @compile {:no_warn_undefined, Plug.Conn}
+
   @doc false
   defmacro __using__(_env) do
     quote location: :keep do

@@ -71,7 +71,14 @@ children = [
 ```
 
 Routes are named by their pattern (`/users/:id`), queries by their parameterized SQL, jobs by
-their worker. Measure anything else with `measure/4`:
+their worker. The application's own `:telemetry.span/3`s are measured as routes too, named by
+their `:name`:
+
+```elixir
+{AirbrakeEx.Performance, repos: [MyApp.Repo], spans: [{[:my_app, :rpc], "RPC"}]}
+```
+
+Or measure anything with `measure/4`:
 
 ```elixir
 AirbrakeEx.Performance.measure("RPC", "create_user", fn -> create_user(params) end)

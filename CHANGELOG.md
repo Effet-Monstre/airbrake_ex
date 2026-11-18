@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 (Effet Monstre fork)
+- `AirbrakeEx.Performance`: `spans: [{event_prefix, method}]` measures the application's own
+  `:telemetry.span/3`s as routes, named by their `:name`, with the queries run inside.
+- No compile warning for `Plug.Conn` in an application that has it.
+
 ## 0.3.0 (Effet Monstre fork)
 - `AirbrakeEx.Performance`: sends performance stats (Airbrake's v5 `routes-stats`,
   `routes-breakdowns`, `queries-stats`, `queues-stats`) from the Phoenix, LiveView, channel,

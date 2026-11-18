@@ -12,9 +12,10 @@ defmodule AirbrakeEx.Performance do
       events (`channels: false` turns those off);
     * the time a route spent in the database, as its breakdown's `db` group;
     * queries: each repo's `[..., :query]` event, named by its SQL (parameterized: no values);
-    * queues: Oban jobs (`[:oban, :job, ...]`), named by worker, errors counted.
+    * queues: Oban jobs (`[:oban, :job, ...]`), named by worker, errors counted;
+    * the application's own `:telemetry.span/3`s, given in `:spans`, as routes.
 
-  Anything else is measured with `measure/3`.
+  Anything else is measured with `measure/4`.
 
   ## Setup
 
@@ -41,6 +42,15 @@ defmodule AirbrakeEx.Performance do
     * `:repos` - the Ecto repos whose queries are measured, as modules (their
       `:telemetry_prefix`) or telemetry prefixes (`[:my_app, :repo]`). Default: none.
     * `:channels` - measure Phoenix channel joins and events. Default: `true`.
+    * `:spans` - the application's own spans (`:telemetry.span/3`), measured as routes:
+      `{event_prefix, method}`, named by the start metadata's `:name`; `method` is a string or
+      a function of that metadata. The queries run inside are attributed to the span, an
+      exception counts as a 500. Default: none.
+
+          spans: [
+            {[:my_app, :rpc], "RPC"},
+            {[:my_app, :store, :run], &(&1.kind |> to_string() |> String.upcase())}
+          ]
     * `:flush_interval` - milliseconds between two sends. Default: one minute.
     * `:enabled` - overrides `performance_stats`.
     * `:name` - the server's name. Default: `AirbrakeEx.Performance`.
@@ -132,13 +142,16 @@ defmodule AirbrakeEx.Performance do
 
   @impl true
   def init(opts) do
+    spans = Map.new(Keyword.get(opts, :spans, []), &valid_span/1)
+
     if enabled?(opts) do
       Process.flag(:trap_exit, true)
       name = Keyword.get(opts, :name, __MODULE__)
       handler = {__MODULE__, name}
       events = events(opts)
       :telemetry.detach(handler)
-      :ok = :telemetry.attach_many(handler, events, &__MODULE__.handle_event/4, %{server: name})
+      config = %{server: name, spans: spans}
+      :ok = :telemetry.attach_many(handler, events, &__MODULE__.handle_event/4, config)
 
       interval = Keyword.get(opts, :flush_interval, @flush_interval)
       if interval, do: Process.send_after(self(), :flush, interval)
@@ -173,8 +186,20 @@ defmodule AirbrakeEx.Performance do
 
     repos = for repo <- Keyword.get(opts, :repos, []), do: prefix(repo) ++ [:query]
 
-    phoenix ++ live ++ channels ++ oban ++ repos
+    spans =
+      for {prefix, _method} <- Keyword.get(opts, :spans, []),
+          stage <- [:start, :stop, :exception],
+          do: prefix ++ [stage]
+
+    phoenix ++ live ++ channels ++ oban ++ repos ++ spans
   end
+
+  defp valid_span({prefix, method} = span)
+       when is_list(prefix) and (is_binary(method) or is_function(method, 1)),
+       do: span
+
+  defp valid_span(span),
+    do: raise(ArgumentError, "expected a span as {event_prefix, method}, got: #{inspect(span)}")
 
   defp prefix(prefix) when is_list(prefix), do: prefix
 
@@ -278,7 +303,29 @@ defmodule AirbrakeEx.Performance do
   end
 
   def handle_event(event, measurements, meta, config) do
-    if List.last(event) == :query, do: query(measurements, meta, config)
+    {prefix, [stage]} = Enum.split(event, -1)
+
+    case Map.fetch(config.spans, prefix) do
+      {:ok, method} -> span(stage, method, measurements, meta, config)
+      :error -> if stage == :query, do: query(measurements, meta, config)
+    end
+  end
+
+  defp span(:start, method, _measurements, meta, _config) do
+    method = if is_function(method), do: method.(meta), else: method
+    enter(to_string(method), to_string(meta[:name] || "unknown"))
+  end
+
+  # Named as it started: a span's stop metadata is what its function returned.
+  defp span(stage, _method, %{duration: duration}, _meta, config) do
+    case pop() do
+      {method, route, db} ->
+        status = if stage == :exception, do: 500, else: 200
+        route_stat(config.server, method, route, status, "other", duration, db)
+
+      nil ->
+        :ok
+    end
   end
 
   defp query(measurements, %{query: sql}, config) when is_binary(sql) do
@@ -316,7 +363,7 @@ defmodule AirbrakeEx.Performance do
   defp response_type(_conn), do: "other"
 
   # What runs between `enter` and `leave` is the route's: its queries name it and add up as its
-  # database time. A stack, for a route inside another (a forwarded router, `measure/3` in a job).
+  # database time. A stack, for a route inside another (a forwarded router, `measure/4` in a job).
   defp enter(method, route) do
     Process.put(@current, [{method, route, Process.get(@db, 0.0)} | Process.get(@current, [])])
     :ok
@@ -324,10 +371,18 @@ defmodule AirbrakeEx.Performance do
 
   # The database time since the matching `enter`, nil without one.
   defp leave do
+    case pop() do
+      {_method, _route, db} -> db
+      nil -> nil
+    end
+  end
+
+  # The innermost route, with its database time so far.
+  defp pop do
     case Process.get(@current, []) do
-      [{_method, _route, start} | rest] ->
+      [{method, route, start} | rest] ->
         if rest == [], do: Process.delete(@current), else: Process.put(@current, rest)
-        Process.get(@db, 0.0) - start
+        {method, route, Process.get(@db, 0.0) - start}
 
       [] ->
         nil

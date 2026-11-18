@@ -52,7 +52,7 @@ defmodule AirbrakeEx.PerformanceTest do
 
   defp decode(digest) do
     <<1::32, _compression::float-64, size::32, rest::binary>> = Base.decode64!(digest)
-    <<means::binary-size(size * 8), weights::binary-size(size * 4)>> = rest
+    <<means::binary-size(^size * 8), weights::binary-size(^size * 4)>> = rest
     Enum.zip(for(<<m::float-64 <- means>>, do: m), for(<<w::32 <- weights>>, do: w))
   end
 
@@ -164,6 +164,49 @@ defmodule AirbrakeEx.PerformanceTest do
              %{"method" => "STORE", "route" => "leads", "statusCode" => 200},
              %{"method" => "STORE", "route" => "save_lead", "statusCode" => 500}
            ] = Enum.sort_by(body["routes"], & &1["route"])
+  end
+
+  test "measures the application's spans as routes, named as they started, with their queries" do
+    start(
+      spans: [
+        {[:app, :rpc], "RPC"},
+        {[:app, :store], &(&1.kind |> to_string() |> String.upcase())}
+      ]
+    )
+
+    :telemetry.span([:app, :rpc], %{name: "create_user"}, fn ->
+      :telemetry.execute([:test, :repo, :query], %{total_time: ms(3)}, %{query: "INSERT users"})
+      {:ok, %{}}
+    end)
+
+    :telemetry.span([:app, :store], %{kind: :mutation, name: :save}, fn -> {:ok, %{}} end)
+
+    assert_raise RuntimeError, fn ->
+      :telemetry.span([:app, :rpc], %{name: "boom"}, fn -> raise "refused" end)
+    end
+
+    Performance.flush()
+
+    {_headers, body} = received("routes-stats")
+
+    assert [
+             %{"method" => "MUTATION", "route" => "save", "statusCode" => 200},
+             %{"method" => "RPC", "route" => "boom", "statusCode" => 500},
+             %{"method" => "RPC", "route" => "create_user", "statusCode" => 200}
+           ] = Enum.sort_by(body["routes"], &{&1["method"], &1["route"]})
+
+    {_headers, body} = received("routes-breakdowns")
+    assert [%{"route" => "create_user", "groups" => %{"db" => %{"sum" => db}}}] = body["routes"]
+    assert_in_delta db, 3, 0.01
+
+    {_headers, body} = received("queries-stats")
+    assert [%{"query" => "INSERT users", "route" => "RPC create_user"}] = body["queries"]
+  end
+
+  test "refuses a span it can't name" do
+    assert_raise ArgumentError, fn ->
+      Performance.init(enabled: true, flush_interval: nil, spans: [{[:app, :rpc], :rpc}])
+    end
   end
 
   test "names LiveView events and channel messages by module" do
